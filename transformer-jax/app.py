@@ -10,20 +10,34 @@ n_heads = 4
 text = ["a", "b", "c", "d", "e", "f"]
 text_encoding = [55, 64, 23, 53, 44, 50]
 
-
-class Embed(hk.Module):
+class SelfAttention(hk.Module):
     def __init__(self, vocab_size: int, embed_dim: int, n_heads: int):
         super().__init__()
         self.embed_dim = embed_dim
-        self.n_heads = n_heads
+        self.n_heads = 1
+        self.vocab_size = vocab_size
         self.embed = hk.Embed(vocab_size, embed_dim)
+        self.layer_norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.linear = hk.Linear(self.embed_dim)
 
-    def __call__(self, indices):
-        x = self.embed(indices) + self.positional_encoding(indices)
+    def __call__(self, x):
+        seq_length = len(x)
+        pos_encoding = self.positional_encoding(seq_length)
+        x = self.embed(x) + pos_encoding
+        query_size = int(self.embed_dim / self.n_heads)
+        w_q_init = hk.initializers.VarianceScaling(scale=1.0, mode="fan_in", distribution="truncated_normal")
+        w_k_init = hk.initializers.VarianceScaling(scale=1.0, mode="fan_in", distribution="truncated_normal")
+        w_v_init = hk.initializers.VarianceScaling(scale=1.0, mode="fan_in", distribution="truncated_normal")
+        w_q = hk.get_parameter("w_q", shape=[self.embed_dim, query_size], init=w_q_init)
+        w_k = hk.get_parameter("w_k", shape=[self.embed_dim, query_size], init=w_k_init)
+        w_v = hk.get_parameter("w_v", shape=[self.embed_dim, query_size], init=w_v_init)
+        x = self.attention(x, w_q, w_k, w_v)
+        x = self.linear(x)
+        x = x + pos_encoding
+        x = self.layer_norm(x)
         return x
-
-    def positional_encoding(self, text_encoding):
-        seq_length = len(text_encoding)
+    
+    def positional_encoding(self, seq_length):
         pos_encoding = jnp.zeros((seq_length, self.embed_dim))
         positions = jnp.arange(seq_length).reshape(-1, 1)
         div_term = jnp.exp(
@@ -39,28 +53,18 @@ class Embed(hk.Module):
         )
         return pos_encoding
 
-
-class SelfAttention(hk.Module):
-    def __init__(self, vocab_size: int, embed_dim: int, n_heads: int):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.n_heads = n_heads
-
-    def __call__(self, x):
-        return x
-
-    def attention(self, pos_encoding, w_q, w_k, w_v):
+    def attention(self, x, w_q, w_k, w_v):
         d_k = int(self.embed_dim / self.n_heads)
-        q = pos_encoding @ w_q
-        k = pos_encoding @ w_k
-        v = pos_encoding @ w_v
-        score = (q @ jnp.transpose(k, (0, 2, 1))) / jnp.sqrt(d_k)
+        q = x @ w_q
+        k = x @ w_k
+        v = x @ w_v
+        score = (q @ jnp.transpose(k, (1, 0))) / jnp.sqrt(d_k)
         att = jax.nn.softmax(score) @ v
         return att
 
 
 class FeedForward(hk.Module):
-    def __init__(self, vocab_size: int, embed_dim: int, n_heads: int):
+    def __init__(self, embed_dim: int, n_heads: int):
         super().__init__()
         self.embed_dim = embed_dim
         self.n_heads = n_heads
@@ -74,15 +78,13 @@ class FeedForward(hk.Module):
 
 @hk.transform
 def transformer(x):
-    embed_layer = Embed(vocab_size=vocab_size, embed_dim=embed_dim, n_heads=n_heads)
-    selfattention_layer = SelfAttention(
+    self_attention_layer = SelfAttention(
         vocab_size=vocab_size, embed_dim=embed_dim, n_heads=n_heads
     )
     feedforward_layer = FeedForward(
-        vocab_size=vocab_size, embed_dim=embed_dim, n_heads=n_heads
+        embed_dim=embed_dim, n_heads=n_heads
     )
-    x = embed_layer(x)
-    x = selfattention_layer(x)
+    x = self_attention_layer(x)
     x = feedforward_layer(x)
     return x
 
