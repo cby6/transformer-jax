@@ -7,4 +7,10 @@ requires-python = ">=3.12"
 dependencies = [
     "dm-haiku>=0.0.13",
     "jax>=0.5.1",
+    "flax>=0.10.4"
+]
+[dependency-groups]
+lint = [
+    "mypy>=1.15.0",
+    "ruff>=0.9.7"
 ]
